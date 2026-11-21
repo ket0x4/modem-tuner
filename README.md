@@ -63,11 +63,14 @@ python3 -m modem_tuner          # from the source tree, with PYTHONPATH=src
 or install it:
 
 ```sh
-./install.sh                    # installs into ~/.local by default
+./install.sh                        # /usr/local, asks for sudo
+PREFIX=~/.local ./install.sh        # per-user, no sudo needed
+DESTDIR=/tmp/stage ./install.sh     # staging for a package
 ```
 
-`PREFIX=/usr ./install.sh` installs system-wide, which also installs the
-desktop entry and icon into the system hicolor theme.
+The installer checks for PyGObject, GTK 4, libadwaita and the ModemManager
+typelib before copying anything, so a missing dependency fails with a clear
+message instead of an import error at first launch.
 
 ## Layout
 
@@ -79,6 +82,11 @@ src/modem_tuner/
   constants.py      enum values and human labels
   widgets.py        shared rows, background worker, list helpers
   pages/            one module per section
+data/
+  modem-tuner           launcher, resolves its own prefix
+  *.desktop.in          desktop entry with @BINDIR@ substitution
+  *.svg                 application icon
+install.sh          installs into PREFIX, supports DESTDIR and sudo
 ```
 
 ## Notes on behaviour

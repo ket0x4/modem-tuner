@@ -1,0 +1,8 @@
+#!/bin/sh
+# Run Modem Tuner from wherever this script was installed.
+# The launcher lives in <prefix>/bin and the package in <prefix>/lib/modem-tuner,
+# so resolve the prefix through the symlink instead of baking the path in: the
+# same file then works for a tree installed to ~/.local and for DESTDIR staging.
+LIBDIR=$(dirname "$(readlink -f "$0")")/../lib/modem-tuner
+export PYTHONPATH="$LIBDIR${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m modem_tuner "$@"
