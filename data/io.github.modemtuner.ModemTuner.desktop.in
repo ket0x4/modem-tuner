@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Modem Tuner
+Comment=Tune the cellular modem: modes, bands, APNs, SIM and signal
+Exec=@BINDIR@/modem-tuner
+Icon=io.github.modemtuner.ModemTuner
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=modem;cellular;sim;apn;lte;5g;band;
+StartupNotify=true
