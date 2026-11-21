@@ -10,7 +10,8 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gtk  # noqa: E402
 
 from ..client import MODEM_LOCATION, Modem  # noqa: E402
-from ..widgets import (banner, button_row, monospace, panel, run_in_background, spin_row, toast, value_row)  # noqa: E402
+from ..widgets import (button_row, monospace, panel, run_in_background,
+                       spin_row, toast, value_row)  # noqa: E402
 
 SOURCE_LABELS = [
     (1, "3GPP cell info", "network-cellular-symbolic"),

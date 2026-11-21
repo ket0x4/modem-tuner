@@ -11,7 +11,7 @@ from gi.repository import Adw, Gtk  # noqa: E402
 
 from .. import constants as C  # noqa: E402
 from ..client import MODEM_3GPP_PROFILE, Modem  # noqa: E402
-from ..widgets import (RowList, banner, button_row, confirm, prompt,
+from ..widgets import (RowList, banner, button_row, confirm,
                        run_in_background, toast)  # noqa: E402
 
 

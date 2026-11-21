@@ -10,8 +10,8 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gtk  # noqa: E402
 
 from .. import constants as C  # noqa: E402
-from ..client import (MODEM_3GPP, MODEM_CELL_BROADCAST, MODEM_FIRMWARE, MODEM_IFACE,
-                      MODEM_MESSAGING, MODEM_SAR, MODEM_SIMPLE, Modem)  # noqa: E402
+from ..client import (MODEM_3GPP, MODEM_CELL_BROADCAST, MODEM_MESSAGING,
+                      MODEM_SAR, Modem)  # noqa: E402
 from ..widgets import (RowList, banner, button_row, combo_row, monospace, panel, prompt, run_in_background, toast, value_row)  # noqa: E402
 
 EPS_UE_MODE_LABELS = C.EPS_UE_MODE_LABELS

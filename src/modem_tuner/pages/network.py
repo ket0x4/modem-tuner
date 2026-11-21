@@ -7,7 +7,7 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gtk  # noqa: E402
 
 from .. import constants as C  # noqa: E402
 from ..client import MODEM_3GPP, MODEM_3GPP_USSD, Modem  # noqa: E402

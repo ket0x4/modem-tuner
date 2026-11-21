@@ -11,7 +11,7 @@ from gi.repository import Adw, Gtk  # noqa: E402
 
 from .. import constants as C  # noqa: E402
 from ..client import MODEM_IFACE, Modem, Sim  # noqa: E402
-from ..widgets import (RowList, banner, button_row, confirm, prompt,
+from ..widgets import (RowList, banner, button_row, prompt,
                        run_in_background, toast, value_row)  # noqa: E402
 
 ESIM_STATUS = {
