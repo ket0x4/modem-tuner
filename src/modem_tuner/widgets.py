@@ -9,8 +9,9 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 gi.require_version("GLib", "2.0")
+gi.require_version("Pango", "1.0")
 
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
 
 
 def toast(window, message: str) -> None:
@@ -49,9 +50,18 @@ def run_in_background(window, task, on_done, busy_widget=None) -> None:
 
 def value_row(title: str, value: str = "", subtitle: str = "") -> Adw.ActionRow:
     row = Adw.ActionRow(title=title, subtitle=subtitle or None)
-    label = Gtk.Label(label=value)
+
+    # A plain label reports a one-character minimum when it wraps, so the row
+    # shrinks it until words break mid-word ("Conn-ected"). Reserving a width
+    # keeps short values on one line while long ones such as
+    # "SIM PIN: 3, SIM PIN2: 3, SIM PUK: 10" still wrap instead of forcing the
+    # whole window wider than the 360 px phone screen.
+    label = Gtk.Label(label=value, xalign=1, wrap=True,
+                      wrap_mode=Pango.WrapMode.WORD_CHAR,
+                      width_chars=9, max_width_chars=13)
     label.add_css_class("dim-label")
     label.set_selectable(True)
+    label.set_justify(Gtk.Justification.RIGHT)
     label.set_valign(Gtk.Align.CENTER)
     row.add_suffix(label)
     row.value_label = label

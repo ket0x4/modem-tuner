@@ -6,8 +6,9 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
+gi.require_version("Gdk", "4.0")
 
-from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from .client import Modem, ModemError, list_modems, manager_version  # noqa: E402
 from .pages.advanced import AdvancedPage  # noqa: E402
@@ -24,7 +25,7 @@ class ModemTunerWindow(Adw.ApplicationWindow):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.set_title("Modem Tuner")
-        self.set_default_size(440, 820)
+        self._size_to_display()
 
         self.modem: Modem | None = None
         self._paths: list[str] = []
@@ -37,6 +38,12 @@ class ModemTunerWindow(Adw.ApplicationWindow):
 
         self.header = Adw.HeaderBar()
         toolbar.add_top_bar(self.header)
+
+        # A single long title ("Modem Tuner · QUALCOMM INCORPORATED") gets
+        # ellipsised on a 360 px screen, so the modem name lives in the
+        # subtitle where it has room to wrap.
+        self.window_title = Adw.WindowTitle(title="Modem Tuner")
+        self.header.set_title_widget(self.window_title)
 
         self.modem_button = Gtk.MenuButton(icon_name="emblem-system-symbolic")
         self.modem_button.set_tooltip_text("Select modem")
@@ -83,6 +90,20 @@ class ModemTunerWindow(Adw.ApplicationWindow):
 
         self._load_modems()
 
+    def _size_to_display(self) -> None:
+        """Open at the size of the screen rather than a desktop-sized window.
+
+        Phones running Plasma Mobile report 360x800 logical pixels; a fixed
+        440-wide default opened wider than the display, so the right edge of
+        every page was cut off.
+        """
+        monitor = Gdk.Display.get_default().get_monitors().get_item(0)
+        if monitor is None:
+            self.set_default_size(360, 700)
+            return
+        geometry = monitor.get_geometry()
+        self.set_default_size(min(geometry.width, 440), min(geometry.height, 820))
+
     # -- modem handling ---------------------------------------------------
 
     def _load_modems(self) -> None:
@@ -117,7 +138,7 @@ class ModemTunerWindow(Adw.ApplicationWindow):
         page = self.pages.get(name)
         if page is not None:
             self.stack.set_visible_child(page)
-            self.set_title(f"{page.get_title()} · Modem Tuner")
+            self.window_title.set_title(page.get_title())
 
     def _attach(self, path: str) -> None:
         try:
@@ -127,7 +148,7 @@ class ModemTunerWindow(Adw.ApplicationWindow):
             return
         self.modem = modem
         title = " ".join(part for part in (modem.manufacturer, modem.model) if part and part != "0")
-        self.set_title(f"Modem Tuner · {title}" if title else "Modem Tuner")
+        self.window_title.set_subtitle(title)
         for page in self.pages.values():
             try:
                 page.bind(modem)
