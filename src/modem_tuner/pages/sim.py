@@ -10,22 +10,18 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gtk  # noqa: E402
 
 from .. import constants as C  # noqa: E402
-from ..client import MODEM_IFACE, Modem, Sim  # noqa: E402
-from ..widgets import (RowList, banner, button_row, prompt,
-                       run_in_background, toast, value_row)  # noqa: E402
-
-ESIM_STATUS = {
-    0: "Unknown", 1: "No profile", 2: "With profiles", 3: "Provisioning",
-}
-REMOVABILITY = {0: "Unknown", 1: "Removable", 2: "Not removable"}
-STORAGE = {0: "Unknown", 1: "SIM", 2: "Modem"}
+from ..client import MODEM_IFACE, Sim  # noqa: E402
+from ..widgets import (RowList, banner, button_row, dialog_size, prompt,  # noqa: E402
+                       run_in_background, toast, value_row)
+from ._base import Page  # noqa: E402
 
 
-class SimPage(Adw.PreferencesPage):
+class SimPage(Page):
+    interfaces = (MODEM_IFACE,)
+
     def __init__(self, window) -> None:
-        super().__init__(title="SIM", icon_name="smartphone-symbolic", name="sim")
-        self.window = window
-        self.modem: Modem | None = None
+        super().__init__(window, title="SIM",
+                         icon_name="smartphone-symbolic", name="sim")
         self.sim: Sim | None = None
         self._rows: dict[str, Adw.ActionRow] = {}
 
@@ -84,10 +80,7 @@ class SimPage(Adw.PreferencesPage):
 
     # -- binding ----------------------------------------------------------
 
-    def bind(self, modem: Modem) -> None:
-        self.modem = modem
-        if modem.has(MODEM_IFACE):
-            modem.signal(MODEM_IFACE, "g-properties-changed", lambda *_a: self.reload())
+    def changed(self, *_args) -> None:
         self.reload()
 
     def reload(self) -> None:
@@ -95,7 +88,7 @@ class SimPage(Adw.PreferencesPage):
         if modem is None:
             return
         path = modem.sim_path
-        self.sim = Sim(path) if path else None
+        self.sim = Sim(path, on_change=self.refresh) if path else None
         self.refresh()
 
     def refresh(self) -> None:
@@ -118,9 +111,9 @@ class SimPage(Adw.PreferencesPage):
         set_row("operator", sim.operator_name)
         set_row("mccmnc", sim.operator_identifier)
         set_row("type", C.SIM_TYPE.get(sim.sim_type, "Unknown"))
-        set_row("esim", ESIM_STATUS.get(sim.esim_status, str(sim.esim_status)))
+        set_row("esim", C.ESIM_STATUS_LABELS.get(sim.esim_status, str(sim.esim_status)))
         set_row("eid", sim.eid or "—")
-        set_row("removability", REMOVABILITY.get(sim.remoability, "Unknown"))
+        set_row("removability", C.REMOVABILITY_LABELS.get(sim.remoability, "Unknown"))
         set_row("gid1", sim.gid1)
         set_row("gid2", sim.gid2)
 
@@ -174,18 +167,46 @@ class SimPage(Adw.PreferencesPage):
     def _on_enable_pin(self) -> None:
         if self.sim is None:
             return
+        locks = self.modem.enabled_facility_locks if self.modem else 0
+        enabled_now = bool(locks & 1)
 
-        def answered(value: str) -> None:
-            enabled = value.strip().lower() in ("1", "on", "yes", "true", "enable")
-            prompt(self.window, "Enable or disable PIN",
-                   "Enter the PIN. Type 'on' or 'off' in the second field.",
-                   "Continue", lambda pin: self._run(
-                       lambda: self.sim.enable_pin(pin, enabled), "PIN setting"),
-                   password=True)
+        dialog = Adw.AlertDialog(
+            heading="PIN protection",
+            body="Ask for the SIM PIN when the modem boots.",
+        )
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
 
-        prompt(self.window, "PIN protection",
-               "Type 'on' to require the PIN at boot or 'off' to disable it.",
-               "Next", answered)
+        switch_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        label = Gtk.Label(label="Require PIN at boot", xalign=0, hexpand=True)
+        switch = Gtk.Switch(active=enabled_now, valign=Gtk.Align.CENTER)
+        switch_box.append(label)
+        switch_box.append(switch)
+
+        entry = Gtk.PasswordEntry()
+        entry.set_show_peek_icon(True)
+        entry.set_placeholder_text("SIM PIN")
+
+        box.append(switch_box)
+        box.append(entry)
+        dialog.set_extra_child(box)
+        dialog.add_cancel("Cancel")
+        dialog.add_response("ok", "Apply")
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("ok")
+        dialog.set_close_response("cancel")
+
+        def answered(_dialog, response: str) -> None:
+            if response != "ok":
+                return
+            pin = entry.get_text()
+            if not pin:
+                toast(self.window, "Enter the SIM PIN")
+                return
+            target = switch.get_active()
+            self._run(lambda: self.sim.enable_pin(pin, target), "PIN setting")
+
+        dialog.connect("response", answered)
+        dialog.present(self.get_root() or self.window)
 
     def _on_change_pin(self) -> None:
         if self.sim is None:
@@ -212,10 +233,10 @@ class SimPage(Adw.PreferencesPage):
         view = Gtk.TextView()
         view.set_monospace(True)
         view.get_buffer().set_text(current)
-        view.set_size_request(280, 220)
+        width, height = dialog_size(280, 220)
         box = Gtk.ScrolledWindow()
         box.set_child(view)
-        box.set_size_request(280, 220)
+        box.set_size_request(width, height)
         dialog.set_extra_child(box)
         dialog.add_cancel("Cancel")
         dialog.add_response("ok", "Save")

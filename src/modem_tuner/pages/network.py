@@ -10,26 +10,18 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gtk  # noqa: E402
 
 from .. import constants as C  # noqa: E402
-from ..client import MODEM_3GPP, MODEM_3GPP_USSD, Modem  # noqa: E402
-from ..widgets import (RowList, banner, button_row, monospace, panel, run_in_background, toast, value_row)  # noqa: E402
-
-REG_STATUS = {
-    0: "Not registered", 1: "Registered", 2: "Searching", 3: "Registration denied",
-    4: "Unknown", 5: "Registered (roaming)",
-}
-REG_TECH = {
-    0: "unknown", 1: "2G", 2: "3G", 3: "4G", 4: "4G", 5: "4G", 6: "4G",
-    7: "5G", 8: "5G", 9: "5G",
-}
-USSD_STATE = {0: "Idle", 1: "Active", 2: "User response required"}
+from ..client import MODEM_3GPP, MODEM_3GPP_USSD, ModemError  # noqa: E402
+from ..widgets import (RowList, banner, button_row, confirm, monospace,  # noqa: E402
+                       panel, prompt, run_in_background, toast, value_row)
+from ._base import Page  # noqa: E402
 
 
-class NetworkPage(Adw.PreferencesPage):
+class NetworkPage(Page):
+    interfaces = (MODEM_3GPP, MODEM_3GPP_USSD)
+
     def __init__(self, window) -> None:
-        super().__init__(title="Network", icon_name="network-wireless-symbolic",
-                         name="network")
-        self.window = window
-        self.modem: Modem | None = None
+        super().__init__(window, title="Network",
+                         icon_name="network-wireless-symbolic", name="network")
 
         self._reg_group = Adw.PreferencesGroup(title="Registration")
         self.add(self._reg_group)
@@ -52,7 +44,7 @@ class NetworkPage(Adw.PreferencesPage):
         self.add(self._scan_group)
         self._scan_button = Gtk.Button(label="Scan now")
         self._scan_button.add_css_class("suggested-action")
-        self._scan_button.connect("clicked", self._on_scan)
+        self._scan_button.connect("clicked", lambda _b: self._on_scan())
         self._scan_group.add(panel(self._scan_button))
         self._scan_list = RowList()
         self._scan_group.add(self._scan_list)
@@ -60,6 +52,10 @@ class NetworkPage(Adw.PreferencesPage):
         self._ussd_group = Adw.PreferencesGroup(
             title="USSD", description="Operator codes such as *100# for balance.")
         self.add(self._ussd_group)
+        self._ussd_state_row = value_row("Session state", "—")
+        self._ussd_group.add(self._ussd_state_row)
+        self._ussd_request = monospace("—")
+        self._ussd_group.add(panel(self._ussd_request))
         self._ussd_row = Adw.EntryRow(title="USSD code")
         self._ussd_row.set_text("*100#")
         self._ussd_row.set_show_apply_button(True)
@@ -74,14 +70,6 @@ class NetworkPage(Adw.PreferencesPage):
             "Cancel USSD session", "", "Cancel", self._on_ussd_cancel,
             destructive=True))
 
-    def bind(self, modem: Modem) -> None:
-        self.modem = modem
-        for interface in (MODEM_3GPP, MODEM_3GPP_USSD):
-            if modem.has(interface):
-                modem.signal(interface, "g-properties-changed",
-                             lambda *_a: self.refresh())
-        self.refresh()
-
     def refresh(self) -> None:
         modem = self.modem
         if modem is None:
@@ -93,25 +81,51 @@ class NetworkPage(Adw.PreferencesPage):
             C.REGISTRATION_LABELS.get(modem.registration_state, "—"))
         self._reg_tech_row.value_label.set_text(
             C.access_technology_short(modem.access_technologies) or "—")
-        notification = modem.ussd_network_request or modem.ussd_network_notification
-        if notification:
-            self._ussd_reply.set_text(notification)
+        self._ussd_state_row.value_label.set_text(
+            C.USSD_STATE_LABELS.get(modem.ussd_state, "—"))
+        request = modem.ussd_network_request or modem.ussd_network_notification
+        self._ussd_request.set_text(request or "—")
 
     # -- actions ----------------------------------------------------------
 
     def _on_auto(self) -> None:
+        self._register("", "Automatic network selection enabled")
+
+    def _register(self, operator_id: str, success_message: str) -> None:
+        if self.modem is None:
+            return
+        try:
+            connected = any(b.connected for b in self.modem.bearers())
+        except ModemError:
+            connected = False
+        if connected:
+            confirm(
+                self.window, "Disconnect mobile data?",
+                "Changing the network selection needs the data connection to "
+                "drop first. Reconnect mobile data afterwards if it does not "
+                "come back on its own.",
+                "Disconnect and continue",
+                lambda: self._do_register(operator_id, success_message),
+                destructive=True)
+            return
+        self._do_register(operator_id, success_message)
+
+    def _do_register(self, operator_id: str, success_message: str) -> None:
         if self.modem is None:
             return
 
+        def task() -> None:
+            self.modem.disconnect_bearers()
+            self.modem.register(operator_id)
+
         def done(_result, error) -> None:
             if error is not None:
-                toast(self.window, f"Automatic selection failed: {error}")
+                toast(self.window, f"Registration failed: {error}")
             else:
-                toast(self.window, "Automatic network selection enabled")
+                toast(self.window, success_message)
                 self.refresh()
 
-        run_in_background(self.window, lambda: self.modem.register(""),
-                          done, self._auto_row.button)
+        run_in_background(self.window, task, done, self._auto_row.button)
 
     def _on_scan(self) -> None:
         if self.modem is None:
@@ -136,8 +150,8 @@ class NetworkPage(Adw.PreferencesPage):
         for network in networks:
             name = str(network.get("operator-long") or network.get("operator-short") or "Unknown")
             code = str(network.get("operator-code") or "")
-            status = REG_STATUS.get(int(network.get("status", 0)), "")
-            tech = REG_TECH.get(int(network.get("access-technologies", 0)), "")
+            status = C.NETWORK_SCAN_STATUS_LABELS.get(int(network.get("status", 0)), "")
+            tech = C.access_technology_short(int(network.get("access-technologies", 0)))
             subtitle = " · ".join(part for part in (code, status, tech) if part)
             row = Adw.ActionRow(title=name, subtitle=subtitle or None)
             button = Gtk.Button(label="Register", valign=Gtk.Align.CENTER)
@@ -146,17 +160,9 @@ class NetworkPage(Adw.PreferencesPage):
             self._scan_list.add(row)
 
     def _register_manual(self, operator_code: str) -> None:
-        if self.modem is None or not operator_code:
+        if not operator_code:
             return
-
-        def done(_result, error) -> None:
-            if error is not None:
-                toast(self.window, f"Registration failed: {error}")
-            else:
-                toast(self.window, f"Registering on {operator_code}…")
-                self.refresh()
-
-        run_in_background(self.window, lambda: self.modem.register(operator_code), done)
+        self._register(operator_code, f"Registering on {operator_code}…")
 
     def _send_ussd(self) -> None:
         if self.modem is None:
@@ -177,7 +183,6 @@ class NetworkPage(Adw.PreferencesPage):
     def _on_ussd_reply(self) -> None:
         if self.modem is None:
             return
-        from ..widgets import prompt
 
         def accepted(text: str) -> None:
             def done(result, error) -> None:

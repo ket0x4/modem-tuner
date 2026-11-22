@@ -6,19 +6,14 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-gi.require_version("Gdk", "4.0")
 
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-from .client import Modem, ModemError, list_modems, manager_version  # noqa: E402
-from .pages.advanced import AdvancedPage  # noqa: E402
-from .pages.location import LocationPage  # noqa: E402
-from .pages.network import NetworkPage  # noqa: E402
-from .pages.profiles import ProfilesPage  # noqa: E402
-from .pages.radio import RadioPage  # noqa: E402
-from .pages.signal import SignalPage  # noqa: E402
-from .pages.sim import SimPage  # noqa: E402
-from .pages.status import StatusPage  # noqa: E402
+from .client import (Modem, ModemError, list_modems, manager_version,  # noqa: E402
+                     watch_modems)
+from .pages import (AdvancedPage, LocationPage, NetworkPage, ProfilesPage,  # noqa: E402
+                    RadioPage, SignalPage, SimPage, StatusPage)
+from .widgets import button_row, display_size  # noqa: E402
 
 
 class ModemTunerWindow(Adw.ApplicationWindow):
@@ -29,6 +24,12 @@ class ModemTunerWindow(Adw.ApplicationWindow):
 
         self.modem: Modem | None = None
         self._paths: list[str] = []
+        self._pending_reload = False
+        self._select_action: Gio.SimpleAction | None = None
+        self._error_page: Adw.PreferencesPage | None = None
+        self._error_group: Adw.PreferencesGroup | None = None
+        self._error_row: Adw.ActionRow | None = None
+        self._tasks: set = set()
 
         self.toast_overlay = Adw.ToastOverlay()
         self.set_content(self.toast_overlay)
@@ -50,12 +51,28 @@ class ModemTunerWindow(Adw.ApplicationWindow):
         self.modem_button.set_visible(False)
         self.header.pack_end(self.modem_button)
 
+        self.busy_spinner = Gtk.Spinner()
+        self.busy_spinner.set_visible(False)
+        self.header.pack_end(self.busy_spinner)
+
+        self.cancel_button = Gtk.Button(icon_name="process-stop-symbolic")
+        self.cancel_button.set_tooltip_text("Cancel the running operation")
+        self.cancel_button.set_visible(False)
+        self.cancel_button.connect("clicked", lambda _b: self.cancel_tasks())
+        self.header.pack_end(self.cancel_button)
+
         reload_button = Gtk.Button(icon_name="view-refresh-symbolic")
         reload_button.set_tooltip_text("Re-read every value")
         reload_button.connect("clicked", lambda _b: self.reload())
         self.header.pack_end(reload_button)
 
         self.stack = Adw.ViewStack()
+        self.stack.set_vexpand(True)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(self._build_error_banner())
+        content.append(self.stack)
+        toolbar.set_content(content)
 
         # Eight sections in a bottom switcher get truncated on a phone-width
         # window, so the sections live in a menu in the header instead.
@@ -64,8 +81,6 @@ class ModemTunerWindow(Adw.ApplicationWindow):
         self.header.pack_start(self.section_button)
         self.section_menu = Gio.Menu()
         self.section_button.set_menu_model(self.section_menu)
-
-        toolbar.set_content(self.stack)
 
         self.pages: dict[str, Adw.PreferencesPage] = {
             "status": StatusPage(self),
@@ -89,6 +104,67 @@ class ModemTunerWindow(Adw.ApplicationWindow):
         self.add_action(section_action)
 
         self._load_modems()
+        self._watcher = watch_modems(self._schedule_modem_reload)
+
+    def _build_error_banner(self) -> Gtk.Revealer:
+        self._error_revealer = Gtk.Revealer()
+        self._error_revealer.set_transition_type(
+            Gtk.RevealerTransitionType.SLIDE_DOWN)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        box.add_css_class("card")
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+
+        icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+        icon.set_valign(Gtk.Align.START)
+        self._error_label = Gtk.Label(xalign=0, wrap=True, selectable=True,
+                                      hexpand=True)
+        self._error_label.add_css_class("caption")
+        close = Gtk.Button(icon_name="window-close-symbolic",
+                           valign=Gtk.Align.CENTER)
+        close.add_css_class("flat")
+        close.set_tooltip_text("Dismiss")
+        close.connect("clicked", lambda _b: self.clear_error())
+
+        box.append(icon)
+        box.append(self._error_label)
+        box.append(close)
+        self._error_revealer.set_child(box)
+        return self._error_revealer
+
+    def report_error(self, message: str) -> None:
+        """Keep a failure visible instead of letting it fall out of a toast."""
+        self._error_label.set_text(message)
+        self._error_revealer.set_reveal_child(True)
+
+    def clear_error(self) -> None:
+        self._error_revealer.set_reveal_child(False)
+
+    # -- background activity ----------------------------------------------
+
+    def register_task(self, task) -> None:
+        self._tasks.add(task)
+        self._update_busy()
+
+    def unregister_task(self, task) -> None:
+        self._tasks.discard(task)
+        self._update_busy()
+
+    def _update_busy(self) -> None:
+        busy = bool(self._tasks)
+        self.busy_spinner.set_visible(busy)
+        if busy:
+            self.busy_spinner.start()
+        else:
+            self.busy_spinner.stop()
+        self.cancel_button.set_visible(busy)
+
+    def cancel_tasks(self) -> None:
+        for task in list(self._tasks):
+            task.cancel()
 
     def _size_to_display(self) -> None:
         """Open at the size of the screen rather than a desktop-sized window.
@@ -97,38 +173,61 @@ class ModemTunerWindow(Adw.ApplicationWindow):
         440-wide default opened wider than the display, so the right edge of
         every page was cut off.
         """
-        monitor = Gdk.Display.get_default().get_monitors().get_item(0)
-        if monitor is None:
-            self.set_default_size(360, 700)
-            return
-        geometry = monitor.get_geometry()
-        self.set_default_size(min(geometry.width, 440), min(geometry.height, 820))
+        width, height = display_size()
+        self.set_default_size(min(width, 440), min(height, 820))
 
     # -- modem handling ---------------------------------------------------
 
     def _load_modems(self) -> None:
         try:
-            self._paths = list_modems()
+            paths = list_modems()
         except ModemError as exc:
-            self._show_fatal(f"Cannot talk to ModemManager: {exc}")
+            self._show_error("Cannot talk to ModemManager", str(exc))
             return
-        if not self._paths:
+        self._paths = paths
+        if not paths:
             version = manager_version() or "unknown version"
-            self._show_fatal(
-                f"No modem found (ModemManager {version}). Check that the modem is "
-                "powered on and that ModemManager detected it.")
+            self._show_error(
+                "No modem found",
+                f"ModemManager {version} is running but reports no modem. "
+                "Check that the modem is powered on and detected.")
             return
 
-        if len(self._paths) > 1:
-            menu = Gio.Menu()
-            for path in self._paths:
-                menu.append(path.rsplit("/", 1)[-1], f"win.select::{path}")
-            self.modem_button.set_menu_model(menu)
-            action = Gio.SimpleAction.new("select", GLib.VariantType.new("s"))
-            action.connect("activate", self._on_select_action)
-            self.get_application().add_action(action)
+        self._update_modem_menu()
+        if self.modem is None or self.modem.path not in paths:
+            self._attach(paths[0])
+        else:
+            self.reload()
+        if (self.stack.get_visible_child() is self._error_page
+                and self.modem is not None):
+            self.stack.set_visible_child(self.pages["status"])
+            self.window_title.set_title("Status")
 
-        self._attach(self._paths[0])
+    def _update_modem_menu(self) -> None:
+        multiple = len(self._paths) > 1
+        self.modem_button.set_visible(multiple)
+        if not multiple:
+            return
+        menu = Gio.Menu()
+        for path in self._paths:
+            menu.append(path.rsplit("/", 1)[-1], f"win.select::{path}")
+        self.modem_button.set_menu_model(menu)
+        if self._select_action is None:
+            self._select_action = Gio.SimpleAction.new(
+                "select", GLib.VariantType.new("s"))
+            self._select_action.connect("activate", self._on_select_action)
+            self.add_action(self._select_action)
+
+    def _schedule_modem_reload(self) -> None:
+        if self._pending_reload:
+            return
+        self._pending_reload = True
+        GLib.timeout_add(300, self._reload_after_change)
+
+    def _reload_after_change(self) -> bool:
+        self._pending_reload = False
+        self._load_modems()
+        return GLib.SOURCE_REMOVE
 
     def _on_select_action(self, _action, parameter) -> None:
         self._attach(parameter.get_string())
@@ -144,34 +243,44 @@ class ModemTunerWindow(Adw.ApplicationWindow):
         try:
             modem = Modem(path)
         except ModemError as exc:
-            self._show_fatal(f"Cannot open {path}: {exc}")
+            self._show_error("Cannot open the modem", str(exc))
             return
         self.modem = modem
-        title = " ".join(part for part in (modem.manufacturer, modem.model) if part and part != "0")
+        self.clear_error()
+        title = " ".join(part for part in (modem.manufacturer, modem.model)
+                         if part and part != "0")
         self.window_title.set_subtitle(title)
         for page in self.pages.values():
             try:
                 page.bind(modem)
             except Exception as exc:  # noqa: BLE001 - one broken page must not hide the rest
                 print(f"modem-tuner: page {page.get_name()} failed to bind: {exc}")
+        if self.stack.get_visible_child() is self._error_page:
+            self.stack.set_visible_child(self.pages["status"])
+            self.window_title.set_title("Status")
 
     def reload(self) -> None:
         if self.modem is None:
             self._load_modems()
             return
+        self.clear_error()
         for page in self.pages.values():
             try:
-                if hasattr(page, "reload"):
-                    page.reload()
-                elif hasattr(page, "refresh"):
-                    page.refresh()
+                page.reload()
             except Exception as exc:  # noqa: BLE001
                 print(f"modem-tuner: reload {page.get_name()} failed: {exc}")
 
-    def _show_fatal(self, message: str) -> None:
-        page = Adw.PreferencesPage()
-        group = Adw.PreferencesGroup(title="No modem available")
-        group.add(Adw.ActionRow(title="What happened", subtitle=message))
-        page.add(group)
-        self.stack.add_titled(page, "error", "Error")
-        self.stack.set_visible_child(page)
+    def _show_error(self, title: str, message: str) -> None:
+        if self._error_page is None:
+            self._error_page = Adw.PreferencesPage()
+            self._error_group = Adw.PreferencesGroup(title="Modem unavailable")
+            self._error_row = Adw.ActionRow(title="What happened")
+            self._error_group.add(self._error_row)
+            self._error_group.add(button_row(
+                "Retry", "Look for the modem again.", "Retry", self._load_modems))
+            self._error_page.add(self._error_group)
+            self.stack.add_titled(self._error_page, "error", "Error")
+        self._error_group.set_title(title)
+        self._error_row.set_subtitle(message)
+        self.stack.set_visible_child(self._error_page)
+        self.window_title.set_title("Error")

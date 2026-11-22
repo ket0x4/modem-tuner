@@ -9,8 +9,11 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gtk  # noqa: E402
 
+from .. import constants as C  # noqa: E402
 from ..client import MODEM_SIGNAL, Modem  # noqa: E402
-from ..widgets import (banner, monospace, panel, run_in_background, spin_row, toast, value_row)  # noqa: E402
+from ..widgets import (banner, monospace, panel, run_in_background, spin_row,  # noqa: E402
+                       toast, value_row)
+from ._base import Page  # noqa: E402
 
 # ModemManager documents these keys per technology.
 SIGNAL_FIELDS = {
@@ -25,14 +28,13 @@ SIGNAL_FIELDS = {
 }
 
 
-class SignalPage(Adw.PreferencesPage):
+class SignalPage(Page):
+    interfaces = (MODEM_SIGNAL,)
+
     def __init__(self, window) -> None:
-        super().__init__(title="Signal", icon_name="network-wireless-symbolic",
-                         name="signal")
-        self.window = window
-        self.modem: Modem | None = None
+        super().__init__(window, title="Signal",
+                         icon_name="network-wireless-symbolic", name="signal")
         self._rows: dict[str, Adw.ActionRow] = {}
-        self._updating = False
 
         self._summary = Adw.PreferencesGroup(title="Overview")
         self.add(self._summary)
@@ -60,20 +62,21 @@ class SignalPage(Adw.PreferencesPage):
 
         self._threshold_group = Adw.PreferencesGroup(
             title="Thresholds",
-            description="The modem emits a signal when values drop below these.",
+            description="The modem reports updates when a measurement changes "
+                        "by more than the threshold.",
         )
         self.add(self._threshold_group)
         self._rssi_row = spin_row(
-            "RSSI threshold (dBm)", "0 disables the threshold.",
-            value=0, lower=-120, upper=0, step=1,
-            on_change=self._on_threshold_changed)
+            "RSSI change (dBm)",
+            "Report when RSSI changes by this much. 0 disables the threshold.",
+            value=0, lower=0, upper=50, step=1)
         self._threshold_group.add(self._rssi_row)
         self._error_row = Adw.SwitchRow(
             title="Error rate threshold",
             subtitle="Emit a signal when the error rate rises.")
         self._threshold_group.add(self._error_row)
         self._apply_thresholds = Gtk.Button(label="Apply thresholds")
-        self._apply_thresholds.connect("clicked", self._on_thresholds_apply)
+        self._apply_thresholds.connect("clicked", lambda _b: self._on_thresholds_apply())
         self._threshold_group.add(panel(self._apply_thresholds))
 
         self._raw_group = Adw.PreferencesGroup(title="Raw values")
@@ -81,13 +84,9 @@ class SignalPage(Adw.PreferencesPage):
         self._raw = monospace("—")
         self._raw_group.add(panel(self._raw))
 
-    def bind(self, modem: Modem) -> None:
-        self.modem = modem
+    def on_bound(self, modem: Modem) -> None:
         if modem.has(MODEM_SIGNAL):
-            modem.signal(MODEM_SIGNAL, "g-properties-changed",
-                         lambda *_a: self.refresh())
             self._revert_signal_rate(modem)
-        self.refresh()
 
     def _revert_signal_rate(self, modem: Modem) -> None:
         """Stop ModemManager from polling signal on our behalf at 5 s.
@@ -110,7 +109,6 @@ class SignalPage(Adw.PreferencesPage):
             quality, recent = modem.signal_quality
             self._quality.value_label.set_text(
                 f"{quality}%{' (live)' if recent else ' (cached)'}")
-            from .. import constants as C
             self._tech.value_label.set_text(
                 ", ".join(C.access_technology_names(modem.access_technologies)) or "—")
             self._rate_row.set_value(modem.signal_rate)
@@ -170,14 +168,11 @@ class SignalPage(Adw.PreferencesPage):
 
         run_in_background(self.window, lambda: self.modem.set_signal_rate(rate), done)
 
-    def _on_threshold_changed(self, _value: float) -> None:
-        pass
-
     def _on_thresholds_apply(self) -> None:
         if self.modem is None:
             return
         thresholds = {
-            "rssi-threshold": self._rssi_row.get_value(),
+            "rssi-threshold": int(self._rssi_row.get_value()),
             "error-rate-threshold": self._error_row.get_active(),
         }
 

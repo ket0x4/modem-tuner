@@ -6,29 +6,22 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-gi.require_version("GLib", "2.0")
 
-from gi.repository import Adw, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gtk  # noqa: E402
 
 from .. import constants as C  # noqa: E402
 from ..client import MODEM_IFACE, Modem  # noqa: E402
-from ..widgets import banner, panel, run_in_background  # noqa: E402
-
-CAPABILITY_LABELS = [
-    (C.MODEM_CAPABILITY.get(1, 1), "POTS"),
-    (C.MODEM_CAPABILITY.get(4, 4), "GSM/UMTS"),
-    (C.MODEM_CAPABILITY.get(8, 8), "LTE"),
-    (C.MODEM_CAPABILITY.get(64, 64), "5G NR"),
-]
+from ..widgets import (banner, confirm, dialog_size, panel, run_in_background,  # noqa: E402
+                       toast)
+from ._base import Page  # noqa: E402
 
 
-class RadioPage(Adw.PreferencesPage):
+class RadioPage(Page):
+    interfaces = (MODEM_IFACE,)
+
     def __init__(self, window) -> None:
-        super().__init__(title="Radio", icon_name="network-modem-symbolic",
-                         name="radio")
-        self.window = window
-        self.modem: Modem | None = None
-        self._updating = False
+        super().__init__(window, title="Radio",
+                         icon_name="network-modem-symbolic", name="radio")
 
         self._mode_group = Adw.PreferencesGroup(
             title="Preferred network mode",
@@ -65,7 +58,7 @@ class RadioPage(Adw.PreferencesPage):
             subtitle="Choose individual bands per technology",
         )
         open_button = Gtk.Button(label="Choose", valign=Gtk.Align.CENTER)
-        open_button.connect("clicked", self._open_band_dialog)
+        open_button.connect("clicked", lambda _b: self._open_band_dialog())
         self._band_actions.add_suffix(open_button)
         self._band_group.add(self._band_actions)
 
@@ -77,7 +70,7 @@ class RadioPage(Adw.PreferencesPage):
             title="Use all supported bands",
             subtitle="Remove any band restriction")
         reset_button = Gtk.Button(label="Unlock", valign=Gtk.Align.CENTER)
-        reset_button.connect("clicked", self._reset_bands)
+        reset_button.connect("clicked", lambda _b: self._reset_bands())
         self._reset_all.add_suffix(reset_button)
         self._reset_all.button = reset_button
         self._band_group.add(self._reset_all)
@@ -92,19 +85,10 @@ class RadioPage(Adw.PreferencesPage):
 
         self._reset_button = Gtk.Button(label="Reset modem")
         self._reset_button.add_css_class("destructive-action")
-        self._reset_button.connect("clicked", self._on_reset)
+        self._reset_button.connect("clicked", lambda _b: self._on_reset())
         self._power_group.add(panel(self._reset_button))
 
     # -- binding ----------------------------------------------------------
-
-    def bind(self, modem: Modem) -> None:
-        self.modem = modem
-        if modem.has(MODEM_IFACE):
-            modem.signal(MODEM_IFACE, "g-properties-changed", self._on_change)
-        self.refresh()
-
-    def _on_change(self, *_args) -> None:
-        self.refresh()
 
     def refresh(self) -> None:
         modem = self.modem
@@ -168,7 +152,6 @@ class RadioPage(Adw.PreferencesPage):
     def _apply(self, label: str, task, on_done=None) -> None:
         def finished(result, error) -> None:
             if error is not None:
-                from ..widgets import toast
                 toast(self.window, f"{label} failed: {error}")
             else:
                 if on_done is not None:
@@ -209,8 +192,6 @@ class RadioPage(Adw.PreferencesPage):
                     lambda: self.modem.set_power_state(state))
 
     def _on_reset(self) -> None:
-        from ..widgets import confirm, toast
-
         def do_reset() -> None:
             try:
                 self.modem.reset()
@@ -244,27 +225,49 @@ class BandDialog(Adw.Dialog):
         self.modem = modem
         self.on_saved = on_saved
         self._checks: dict[int, Gtk.CheckButton] = {}
+        self._groups: list[tuple[Adw.PreferencesGroup, list[int]]] = []
 
         self.set_title("Band selection")
-        self.set_content_width(420)
-        self.set_content_height(620)
+        width, height = dialog_size(420, 620)
+        self.set_content_width(width)
+        self.set_content_height(height)
 
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
         toolbar.add_top_bar(header)
 
+        search = Gtk.SearchEntry()
+        search.set_placeholder_text("Filter bands")
+        search.connect("search-changed", lambda entry: self._filter(entry.get_text()))
+        header.set_title_widget(search)
+
         save = Gtk.Button(label="Apply")
         save.add_css_class("suggested-action")
-        save.connect("clicked", self._save)
+        save.connect("clicked", lambda _b: self._save())
         header.pack_end(save)
 
         page = Adw.PreferencesPage()
         toolbar.set_content(page)
         self.set_child(toolbar)
 
+        self._current = set(modem.current_bands)
+        self._everything = C.ANY_BAND in self._current or not self._current
         supported = modem.supported_bands
-        current = set(modem.current_bands)
-        everything = C.ANY_BAND in current or not current
+
+        presets = Adw.PreferencesGroup(title="Presets")
+        current_button = Gtk.Button(label="Current")
+        current_button.add_css_class("flat")
+        current_button.connect("clicked", lambda _b: self._apply_current())
+        all_button = Gtk.Button(label="All")
+        all_button.add_css_class("flat")
+        all_button.connect(
+            "clicked", lambda _b: self._set_all(list(self._checks), True))
+        none_button = Gtk.Button(label="None")
+        none_button.add_css_class("flat")
+        none_button.connect(
+            "clicked", lambda _b: self._set_all(list(self._checks), False))
+        presets.add(panel(_box(current_button, all_button, none_button)))
+        page.add(presets)
 
         families: dict[str, list[int]] = {}
         for band in supported:
@@ -275,6 +278,7 @@ class BandDialog(Adw.Dialog):
             if not bands:
                 continue
             group = Adw.PreferencesGroup(title=family)
+            self._groups.append((group, bands))
             page.add(group)
 
             all_button = Gtk.Button(label="All")
@@ -290,7 +294,6 @@ class BandDialog(Adw.Dialog):
             flow = Gtk.FlowBox()
             flow.set_selection_mode(Gtk.SelectionMode.NONE)
             flow.set_max_children_per_line(4)
-            flow.set_min_children_per_line(3)
             flow.set_row_spacing(4)
             flow.set_column_spacing(4)
             flow.set_margin_top(8)
@@ -300,7 +303,8 @@ class BandDialog(Adw.Dialog):
 
             for band in bands:
                 check = Gtk.CheckButton(label=C.band_label(band))
-                check.set_active(everything or band in current)
+                check.set_active(self._everything or band in self._current)
+                check.connect("toggled", lambda _c: self._update_title())
                 check.add_css_class("card")
                 self._checks[band] = check
                 flow.append(check)
@@ -309,17 +313,36 @@ class BandDialog(Adw.Dialog):
 
         if not supported:
             page.add(banner("This modem does not report its supported bands."))
+        self._update_title()
 
-    def _set_all(self, bands: list[int], active: bool) -> None:
+    def _set_all(self, bands, active: bool) -> None:
         for band in bands:
             check = self._checks.get(band)
             if check is not None:
                 check.set_active(active)
 
+    def _apply_current(self) -> None:
+        for band, check in self._checks.items():
+            check.set_active(self._everything or band in self._current)
+
+    def _filter(self, text: str) -> None:
+        query = text.strip().lower()
+        for group, bands in self._groups:
+            visible = False
+            for band in bands:
+                check = self._checks[band]
+                match = not query or query in check.get_label().lower()
+                check.set_visible(match)
+                visible = visible or match
+            group.set_visible(visible)
+
+    def _update_title(self) -> None:
+        selected = sum(1 for check in self._checks.values() if check.get_active())
+        self.set_title(f"Band selection · {selected} selected")
+
     def _save(self) -> None:
         selected = [band for band, check in self._checks.items() if check.get_active()]
         if not selected:
-            from ..widgets import toast
             toast(self.window, "Select at least one band")
             return
 
@@ -327,7 +350,6 @@ class BandDialog(Adw.Dialog):
             self.modem.set_current_bands(selected)
 
         def done(result, error) -> None:
-            from ..widgets import toast
             if error is not None:
                 toast(self.window, f"Band update failed: {error}")
             else:

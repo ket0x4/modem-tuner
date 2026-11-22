@@ -8,25 +8,90 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
+gi.require_version("Gdk", "4.0")
 gi.require_version("GLib", "2.0")
 gi.require_version("Pango", "1.0")
 
-from gi.repository import Adw, GLib, Gtk, Pango  # noqa: E402
+from gi.repository import Adw, Gdk, GLib, Gtk, Pango  # noqa: E402
+
+
+def display_size() -> tuple[int, int]:
+    """Logical size of the primary monitor, with a phone-sized fallback.
+
+    Windows and dialogs are sized from this instead of desktop defaults so a
+    fixed width such as 420 never opens wider than a 360 px phone screen.
+    """
+    display = Gdk.Display.get_default()
+    if display is not None:
+        monitor = display.get_monitors().get_item(0)
+        if monitor is not None:
+            geometry = monitor.get_geometry()
+            return geometry.width, geometry.height
+    return 360, 700
+
+
+def dialog_size(preferred_width: int, preferred_height: int) -> tuple[int, int]:
+    """Preferred dialog content size, clamped to the screen."""
+    width, height = display_size()
+    return min(preferred_width, width), min(preferred_height, height)
 
 
 def toast(window, message: str) -> None:
-    """Show a transient message at the bottom of the window."""
+    """Show a transient message at the bottom of the window.
+
+    Bus-policy denials are persistent configuration problems, not one-off
+    failures, so they go to the window's inline banner where they can be read
+    and copied instead of disappearing after a few seconds.
+    """
+    if "permission denied" in message.lower() and hasattr(window, "report_error"):
+        window.report_error(message)
+        return
     overlay = getattr(window, "toast_overlay", None)
     if overlay is not None:
         overlay.add_toast(Adw.Toast.new(message))
 
 
-def run_in_background(window, task, on_done, busy_widget=None) -> None:
+class BackgroundTask:
+    """Handle for a worker started by run_in_background.
+
+    ``cancel()`` hides the result and re-enables the UI immediately. The
+    ModemManager call itself cannot be aborted, so it may still complete on the
+    modem; the next property change refreshes the page either way.
+    """
+
+    def __init__(self, window, busy_widget=None) -> None:
+        self.window = window
+        self.busy_widget = busy_widget
+        self.cancelled = False
+        self._released = False
+        if hasattr(window, "register_task"):
+            window.register_task(self)
+
+    def cancel(self) -> None:
+        if self.cancelled:
+            return
+        self.cancelled = True
+        GLib.idle_add(self._release)
+
+    def _release(self) -> bool:
+        if not self._released:
+            self._released = True
+            if self.busy_widget is not None:
+                self.busy_widget.set_sensitive(True)
+            if hasattr(self.window, "unregister_task"):
+                self.window.unregister_task(self)
+        return GLib.SOURCE_REMOVE
+
+
+def run_in_background(window, task, on_done, busy_widget=None) -> BackgroundTask:
     """Run a blocking call off the main loop.
 
     Scan, Register and PIN operations talk to the modem over AT and can take
-    tens of seconds; doing them inline freezes the whole window.
+    tens of seconds; doing them inline freezes the whole window. The returned
+    handle is registered with the window so it can show activity and offer a
+    cancel button.
     """
+    handle = BackgroundTask(window, busy_widget)
     if busy_widget is not None:
         busy_widget.set_sensitive(False)
 
@@ -34,18 +99,19 @@ def run_in_background(window, task, on_done, busy_widget=None) -> None:
         try:
             result = task()
         except Exception as exc:  # noqa: BLE001 - surfaced to the user
-            error = exc
+            result, error = None, exc
         else:
             error = None
-        GLib.idle_add(finish, result if error is None else None, error)
+        GLib.idle_add(finish, result, error)
 
     def finish(result, error) -> bool:
-        if busy_widget is not None:
-            busy_widget.set_sensitive(True)
-        on_done(result, error)
+        handle._release()
+        if not handle.cancelled:
+            on_done(result, error)
         return GLib.SOURCE_REMOVE
 
     threading.Thread(target=worker, daemon=True).start()
+    return handle
 
 
 def value_row(title: str, value: str = "", subtitle: str = "") -> Adw.ActionRow:
@@ -96,26 +162,6 @@ def spin_row(title: str, subtitle: str = "", value: float = 0.0,
                       adjustment=adjustment, digits=digits)
     if on_change is not None:
         row.connect("notify::value", lambda r, _p: on_change(r.get_value()))
-    return row
-
-
-def entry_row(title: str, subtitle: str = "", text: str = "", placeholder: str = "",
-              on_apply=None, apply_label: str = "Apply") -> Adw.EntryRow:
-    row = Adw.EntryRow(title=title)
-    if subtitle:
-        row.set_tooltip_text(subtitle)
-    if placeholder:
-        row.set_show_apply_button(True)
-    row.set_text(text)
-
-    def apply(_row) -> None:
-        if on_apply is not None:
-            on_apply(row.get_text())
-
-    row.connect("apply", apply)
-    if on_apply is not None:
-        row.set_show_apply_button(True)
-        row.set_apply_label(apply_label) if hasattr(row, "set_apply_label") else None
     return row
 
 
@@ -175,13 +221,21 @@ def prompt(window, heading: str, body: str, label: str, on_accept,
     dialog.present(window)
 
 
+BANNER_ICONS = {
+    "warning": "dialog-warning-symbolic",
+    "info": "dialog-information-symbolic",
+    "error": "dialog-error-symbolic",
+}
+
+
 def banner(text: str, css: str = "warning") -> Gtk.Box:
     """An inline note used when a feature is blocked by the bus policy."""
     box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
     box.add_css_class("card")
     box.set_margin_top(6)
     box.set_margin_bottom(6)
-    icon = Gtk.Image.new_from_icon_name("dialog-information-symbolic")
+    icon = Gtk.Image.new_from_icon_name(
+        BANNER_ICONS.get(css, "dialog-information-symbolic"))
     icon.set_valign(Gtk.Align.START)
     label = Gtk.Label(label=text, wrap=True, xalign=0)
     label.add_css_class("caption")

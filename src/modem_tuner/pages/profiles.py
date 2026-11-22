@@ -10,17 +10,18 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gtk  # noqa: E402
 
 from .. import constants as C  # noqa: E402
-from ..client import MODEM_3GPP_PROFILE, Modem  # noqa: E402
-from ..widgets import (RowList, banner, button_row, confirm,
-                       run_in_background, toast)  # noqa: E402
+from ..client import MODEM_3GPP_PROFILE  # noqa: E402
+from ..widgets import (RowList, banner, button_row, confirm, dialog_size,  # noqa: E402
+                       run_in_background, toast)
+from ._base import Page  # noqa: E402
 
 
-class ProfilesPage(Adw.PreferencesPage):
+class ProfilesPage(Page):
+    interfaces = (MODEM_3GPP_PROFILE,)
+
     def __init__(self, window) -> None:
-        super().__init__(title="APN profiles", icon_name="network-workgroup-symbolic",
-                         name="profiles")
-        self.window = window
-        self.modem: Modem | None = None
+        super().__init__(window, title="APN profiles",
+                         icon_name="network-workgroup-symbolic", name="profiles")
 
         self._group = Adw.PreferencesGroup(
             title="Profiles",
@@ -34,15 +35,11 @@ class ProfilesPage(Adw.PreferencesPage):
         self._group.add(button_row(
             "Add profile", "Create a new APN profile.", "Add", self._on_add))
 
-    def bind(self, modem: Modem) -> None:
-        self.modem = modem
+    def on_bound(self, modem) -> None:
         if modem.has(MODEM_3GPP_PROFILE):
-            modem.signal(MODEM_3GPP_PROFILE, "g-properties-changed",
-                         lambda *_a: self.refresh())
             self._connect_updated(modem)
-        self.refresh()
 
-    def _connect_updated(self, modem: Modem) -> None:
+    def _connect_updated(self, modem) -> None:
         try:
             modem.signal(MODEM_3GPP_PROFILE, "Updated", lambda *_a: self.refresh())
         except Exception:  # noqa: BLE001 - not all versions emit it
@@ -74,9 +71,8 @@ class ProfilesPage(Adw.PreferencesPage):
         details = [
             f"id {profile_id}" if profile_id is not None else "",
             name,
-            _apn_types(apn_type),
-            {0: "IPv4", 1: "IPv6", 2: "IPv4v6", 3: "IPv4", 4: "IPv6", 5: "IPv4v6",
-             6: "IPv4v6"}.get(ip_type, ""),
+            C.apn_type_label(apn_type),
+            C.IP_TYPE_LABELS.get(ip_type, ""),
             "" if enabled else "disabled",
         ]
         row = Adw.ActionRow(title=apn, subtitle=" · ".join(d for d in details if d))
@@ -145,7 +141,7 @@ class ProfileDialog(Adw.Dialog):
         self.on_save = on_save
 
         self.set_title("APN profile")
-        self.set_content_width(400)
+        self.set_content_width(dialog_size(400, 0)[0])
 
         toolbar = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -154,7 +150,7 @@ class ProfileDialog(Adw.Dialog):
 
         save = Gtk.Button(label="Save")
         save.add_css_class("suggested-action")
-        save.connect("clicked", self._save)
+        save.connect("clicked", lambda _b: self._save())
         header.pack_end(save)
 
         page = Adw.PreferencesPage()
@@ -189,10 +185,9 @@ class ProfileDialog(Adw.Dialog):
             self._auth.set_selected(self._auth_values.index(auth))
         group.add(self._auth)
 
-        ip_labels = ["IPv4", "IPv6", "IPv4v6"]
-        self._ip_values = [3, 4, 6]
+        self._ip_values = C.IP_TYPE_VALUES
         self._ip = Adw.ComboRow(title="IP type")
-        self._ip.set_model(Gtk.StringList.new(ip_labels))
+        self._ip.set_model(Gtk.StringList.new(C.IP_TYPE_DIALOG_LABELS))
         current_ip = int(profile.get("ip-type", 3) or 3)
         self._ip.set_selected(self._ip_values.index(current_ip)
                               if current_ip in self._ip_values else 0)
@@ -248,8 +243,3 @@ class ProfileDialog(Adw.Dialog):
 
         self.on_save(result)
         self.close()
-
-
-def _apn_types(mask: int) -> str:
-    names = [label for value, label in sorted(C.APN_TYPE_LABELS.items()) if mask & value]
-    return "+".join(names)

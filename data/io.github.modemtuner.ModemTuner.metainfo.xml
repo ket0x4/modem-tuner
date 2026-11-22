@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.modemtuner.ModemTuner</id>
+  <name>Modem Tuner</name>
+  <summary>Fine-grained control over a ModemManager modem</summary>
+
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+
+  <description>
+    <p>
+      Modem Tuner exposes the parts of the ModemManager API that mmcli can print
+      but most graphical tools never show: preferred access mode, individual band
+      selection, capabilities, APN profiles, SIM PIN state, USSD, signal polling,
+      location sources, cell broadcast and SAR.
+    </p>
+    <p>
+      Every page reads live values over D-Bus and updates when ModemManager emits
+      property changes, so no polling loop is needed.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.modemtuner.ModemTuner.desktop</launchable>
+  <icon type="stock">io.github.modemtuner.ModemTuner</icon>
+
+  <categories>
+    <category>Settings</category>
+    <category>HardwareSettings</category>
+  </categories>
+
+  <url type="homepage">https://github.com/modem-tuner/modem-tuner</url>
+  <url type="bugtracker">https://github.com/modem-tuner/modem-tuner/issues</url>
+
+  <developer id="io.github.modemtuner">
+    <name>modem-tuner</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </supports>
+
+  <provides>
+    <binary>modem-tuner</binary>
+  </provides>
+
+  <releases>
+    <release version="1.0.0" date="2026-11-22"/>
+  </releases>
+</component>

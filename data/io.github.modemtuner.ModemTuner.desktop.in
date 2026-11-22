@@ -7,4 +7,5 @@ Icon=io.github.modemtuner.ModemTuner
 Terminal=false
 Categories=Settings;HardwareSettings;
 Keywords=modem;cellular;sim;apn;lte;5g;band;
+X-Purism-FormFactor=Workstation;Mobile;
 StartupNotify=true

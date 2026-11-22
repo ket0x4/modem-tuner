@@ -29,10 +29,20 @@ MODEM_SIMPLE = "org.freedesktop.ModemManager1.Modem.Simple"
 MODEM_FIRMWARE = "org.freedesktop.ModemManager1.Modem.Firmware"
 MODEM_CELL_BROADCAST = "org.freedesktop.ModemManager1.Modem.CellBroadcast"
 SIM_IFACE = "org.freedesktop.ModemManager1.Sim"
+BEARER_IFACE = "org.freedesktop.ModemManager1.Bearer"
+MESSAGE_IFACE = "org.freedesktop.ModemManager1.Sms"
 
 
 class ModemError(Exception):
     """A ModemManager call failed."""
+
+
+def _system_proxy(path: str, interface: str) -> Gio.DBusProxy:
+    """Proxy an interface on the system bus without starting the daemon."""
+    return Gio.DBusProxy.new_for_bus_sync(
+        Gio.BusType.SYSTEM, Gio.DBusProxyFlags.DO_NOT_AUTO_START,
+        None, BUS_NAME, path, interface, None,
+    )
 
 
 class Modem:
@@ -65,10 +75,7 @@ class Modem:
         proxy = self._proxies.get(key)
         if proxy is not None:
             return proxy
-        proxy = Gio.DBusProxy.new_for_bus_sync(
-            Gio.BusType.SYSTEM, Gio.DBusProxyFlags.DO_NOT_AUTO_START,
-            None, BUS_NAME, path, interface, None,
-        )
+        proxy = _system_proxy(path, interface)
         proxy.connect("g-properties-changed", self._properties_changed)
         self._proxies[key] = proxy
         return proxy
@@ -84,13 +91,6 @@ class Modem:
             return proxy.call_sync(method, params, Gio.DBusCallFlags.NONE, timeout, None)
         except GLib.Error as exc:
             raise ModemError(_short_error(exc)) from exc
-
-    def props(self, interface: str) -> dict:
-        proxy = self._get(interface, self.path)
-        value = proxy.get_cached_property_names()
-        if value is None:
-            return {}
-        return {name: proxy.get_cached_property(name) for name in value}
 
     def prop(self, interface: str, name: str, default=None):
         value = self._get(interface, self.path).get_cached_property(name)
@@ -210,7 +210,10 @@ class Modem:
         self._call(MODEM_IFACE, "SetCurrentCapabilities", GLib.Variant("(u)", (capabilities,)))
 
     def set_current_modes(self, allowed: int, preferred: int) -> None:
-        self._call(MODEM_IFACE, "SetCurrentModes", GLib.Variant("(uu)", (allowed, preferred)))
+        # SetCurrentModes takes one MMModemModeCombination struct, so the
+        # signature is ((uu)) — two plain u arguments would be rejected.
+        self._call(MODEM_IFACE, "SetCurrentModes",
+                   GLib.Variant("((uu))", ((allowed, preferred),)))
 
     def set_current_bands(self, bands: list[int]) -> None:
         self._call(MODEM_IFACE, "SetCurrentBands", GLib.Variant("(au)", (bands,)))
@@ -275,13 +278,16 @@ class Modem:
         self._call(MODEM_3GPP, "SetPacketServiceState", GLib.Variant("(u)", (state,)))
 
     def set_initial_eps_bearer_settings(self, settings: dict) -> None:
-        self._call(MODEM_3GPP, "SetInitialEpsBearerSettings", GLib.Variant("(a{sv})", (settings,)))
+        self._call(MODEM_3GPP, "SetInitialEpsBearerSettings",
+                   GLib.Variant("(a{sv})", (_sv_dict(settings),)))
 
     def set_nr5g_registration_settings(self, settings: dict) -> None:
-        self._call(MODEM_3GPP, "SetNr5gRegistrationSettings", GLib.Variant("(a{sv})", (settings,)))
+        self._call(MODEM_3GPP, "SetNr5gRegistrationSettings",
+                   GLib.Variant("(a{sv})", (_sv_dict(settings),)))
 
     def disable_facility_lock(self, locks: int, pin: str) -> None:
-        self._call(MODEM_3GPP, "DisableFacilityLock", GLib.Variant("(us)", (locks, pin)))
+        self._call(MODEM_3GPP, "DisableFacilityLock",
+                   GLib.Variant("((us))", ((locks, pin),)))
 
     def scan_networks(self) -> list[dict]:
         reply = self._call(MODEM_3GPP, "Scan", None, timeout=180000)
@@ -300,11 +306,13 @@ class Modem:
         return [dict(item) for item in reply.unpack()[0]]
 
     def set_profile(self, profile: dict) -> dict:
-        reply = self._call(MODEM_3GPP_PROFILE, "Set", GLib.Variant("(a{sv})", (profile,)))
+        reply = self._call(MODEM_3GPP_PROFILE, "Set",
+                           GLib.Variant("(a{sv})", (_sv_dict(profile),)))
         return dict(reply.unpack()[0])
 
     def delete_profile(self, profile: dict) -> None:
-        self._call(MODEM_3GPP_PROFILE, "Delete", GLib.Variant("(a{sv})", (profile,)))
+        self._call(MODEM_3GPP_PROFILE, "Delete",
+                   GLib.Variant("(a{sv})", (_sv_dict(profile),)))
 
     # -- USSD -------------------------------------------------------------
 
@@ -359,7 +367,8 @@ class Modem:
         self._call(MODEM_SIGNAL, "Setup", GLib.Variant("(u)", (rate,)))
 
     def set_signal_thresholds(self, thresholds: dict) -> None:
-        self._call(MODEM_SIGNAL, "SetupThresholds", GLib.Variant("(a{sv})", (thresholds,)))
+        self._call(MODEM_SIGNAL, "SetupThresholds",
+                   GLib.Variant("(a{sv})", (_sv_dict(thresholds),)))
 
     # -- SAR --------------------------------------------------------------
 
@@ -427,12 +436,21 @@ class Modem:
         return [int(v) for v in self.prop(MODEM_MESSAGING, "SupportedStorages", [])]
 
     @property
-    def messages(self) -> list[str]:
+    def message_paths(self) -> list[str]:
         return list(self.prop(MODEM_MESSAGING, "Messages", []))
 
     def list_messages(self) -> list[str]:
         reply = self._call(MODEM_MESSAGING, "List", None)
         return list(reply.unpack()[0])
+
+    def messages(self) -> list["Message"]:
+        return [Message(path) for path in self.list_messages()]
+
+    def create_message(self, number: str, text: str) -> str:
+        reply = self._call(
+            MODEM_MESSAGING, "Create",
+            GLib.Variant("(a{sv})", (_sv_dict({"number": number, "text": text}),)))
+        return reply.unpack()[0]
 
     def set_default_storage(self, storage: int) -> None:
         self._call(MODEM_MESSAGING, "SetDefaultStorage", GLib.Variant("(u)", (storage,)))
@@ -440,8 +458,9 @@ class Modem:
     # -- firmware ---------------------------------------------------------
 
     def list_firmware(self) -> list[dict]:
+        # List returns (method, images): the method name comes first.
         reply = self._call(MODEM_FIRMWARE, "List", None)
-        return [dict(item) for item in reply.unpack()[0]]
+        return [dict(item) for item in reply.unpack()[1]]
 
     def select_firmware(self, unique_id: str) -> None:
         self._call(MODEM_FIRMWARE, "Select", GLib.Variant("(s)", (unique_id,)),
@@ -463,7 +482,8 @@ class Modem:
         return {str(k): _plain(v) for k, v in reply.unpack()[0].items()}
 
     def simple_connect(self, settings: dict) -> str:
-        reply = self._call(MODEM_SIMPLE, "Connect", GLib.Variant("(a{sv})", (settings,)),
+        reply = self._call(MODEM_SIMPLE, "Connect",
+                           GLib.Variant("(a{sv})", (_sv_dict(settings),)),
                            timeout=120000)
         return reply.unpack()[0]
 
@@ -474,21 +494,78 @@ class Modem:
         reply = self._call(MODEM_IFACE, "ListBearers", None)
         return list(reply.unpack()[0])
 
+    def bearers(self, on_change=None) -> list["Bearer"]:
+        return [Bearer(path, on_change=on_change) for path in self.list_bearers()]
+
+    def disconnect_bearers(self) -> list[str]:
+        """Disconnect every active bearer and return the paths that were up.
+
+        Register() is refused while a bearer is connected, so network selection
+        has to drop the data session first.
+        """
+        disconnected = []
+        for bearer in self.bearers():
+            if bearer.connected:
+                self.simple_disconnect(bearer.path)
+                disconnected.append(bearer.path)
+        return disconnected
+
     def command(self, command: str, timeout: int = 10) -> str:
         reply = self._call(MODEM_IFACE, "Command", GLib.Variant("(su)", (command, timeout)),
                            timeout=(timeout + 5) * 1000)
         return reply.unpack()[0]
 
 
-class Sim:
-    def __init__(self, path: str) -> None:
+class Bearer:
+    """One bearer object: the APN, its interface and whether it is up."""
+
+    def __init__(self, path: str, on_change=None) -> None:
         self.path = path
+        self._proxy_obj: Gio.DBusProxy | None = None
+        self._on_change = on_change
 
     def _proxy(self) -> Gio.DBusProxy:
-        return Gio.DBusProxy.new_for_bus_sync(
-            Gio.BusType.SYSTEM, Gio.DBusProxyFlags.DO_NOT_AUTO_START,
-            None, BUS_NAME, self.path, SIM_IFACE, None,
-        )
+        if self._proxy_obj is None:
+            self._proxy_obj = _system_proxy(self.path, BEARER_IFACE)
+            if self._on_change is not None:
+                self._proxy_obj.connect(
+                    "g-properties-changed", lambda *_a: self._on_change())
+        return self._proxy_obj
+
+    @property
+    def apn(self) -> str:
+        settings = self._proxy().get_cached_property("Properties")
+        if settings is None:
+            return ""
+        try:
+            return str(dict(settings.unpack()).get("apn", ""))
+        except (TypeError, ValueError):
+            return ""
+
+    @property
+    def interface(self) -> str:
+        value = self._proxy().get_cached_property("Interface")
+        return value.unpack() if value is not None else ""
+
+    @property
+    def connected(self) -> bool:
+        value = self._proxy().get_cached_property("Connected")
+        return bool(value.unpack()) if value is not None else False
+
+
+class Sim:
+    def __init__(self, path: str, on_change=None) -> None:
+        self.path = path
+        self._proxy_obj: Gio.DBusProxy | None = None
+        self._on_change = on_change
+
+    def _proxy(self) -> Gio.DBusProxy:
+        if self._proxy_obj is None:
+            self._proxy_obj = _system_proxy(self.path, SIM_IFACE)
+            if self._on_change is not None:
+                self._proxy_obj.connect(
+                    "g-properties-changed", lambda *_a: self._on_change())
+        return self._proxy_obj
 
     def prop(self, name: str, default=None):
         value = self._proxy().get_cached_property(name)
@@ -568,13 +645,70 @@ class Sim:
         self._call("SetPreferredNetworks", GLib.Variant("(a(su))", (networks,)))
 
 
+class Message:
+    """One SMS object, addressed by its object path."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self._proxy_obj: Gio.DBusProxy | None = None
+
+    def _proxy(self) -> Gio.DBusProxy:
+        if self._proxy_obj is None:
+            self._proxy_obj = _system_proxy(self.path, MESSAGE_IFACE)
+        return self._proxy_obj
+
+    def prop(self, name: str, default=None):
+        value = self._proxy().get_cached_property(name)
+        return default if value is None else value.unpack()
+
+    @property
+    def number(self) -> str:
+        return self.prop("Number", "")
+
+    @property
+    def text(self) -> str:
+        return self.prop("Text", "")
+
+    @property
+    def timestamp(self) -> str:
+        return self.prop("Timestamp", "")
+
+    @property
+    def state(self) -> int:
+        return int(self.prop("State", 0))
+
+
+_manager_proxy: Gio.DBusProxy | None = None
+
+
+def manager_proxy() -> Gio.DBusProxy:
+    """The shared ObjectManager proxy used to list and watch modems."""
+    global _manager_proxy
+    if _manager_proxy is None:
+        _manager_proxy = _system_proxy(
+            ROOT_PATH, "org.freedesktop.DBus.ObjectManager")
+    return _manager_proxy
+
+
+def watch_modems(callback) -> Gio.DBusProxy:
+    """Call ``callback`` when a modem interface is added or removed."""
+    proxy = manager_proxy()
+
+    def on_signal(_proxy, _sender, signal_name, parameters) -> None:
+        if signal_name not in ("InterfacesAdded", "InterfacesRemoved"):
+            return
+        _path, interfaces = parameters.unpack()
+        if MODEM_IFACE in interfaces:
+            callback()
+
+    proxy.connect("g-signal", on_signal)
+    return proxy
+
+
 def list_modems() -> list[str]:
     """Object paths of every modem ModemManager currently knows."""
     try:
-        manager = Gio.DBusProxy.new_for_bus_sync(
-            Gio.BusType.SYSTEM, Gio.DBusProxyFlags.DO_NOT_AUTO_START, None,
-            BUS_NAME, ROOT_PATH, "org.freedesktop.DBus.ObjectManager", None,
-        )
+        manager = manager_proxy()
         reply = manager.call_sync(
             "GetManagedObjects", None, Gio.DBusCallFlags.NONE, 5000, None,
         )
@@ -589,14 +723,40 @@ def list_modems() -> list[str]:
 
 def manager_version() -> str:
     try:
-        proxy = Gio.DBusProxy.new_for_bus_sync(
-            Gio.BusType.SYSTEM, Gio.DBusProxyFlags.DO_NOT_AUTO_START, None,
-            BUS_NAME, ROOT_PATH, "org.freedesktop.ModemManager1", None,
-        )
+        proxy = _system_proxy(ROOT_PATH, "org.freedesktop.ModemManager1")
         value = proxy.get_cached_property("Version")
         return value.unpack() if value is not None else ""
     except GLib.Error:
         return ""
+
+
+def _sv_dict(values: dict, int_type: str = "u") -> dict:
+    """Wrap plain Python values as the GVariant members of an ``a{sv}``.
+
+    GLib requires each value of a variant dictionary to already be a
+    GLib.Variant; a plain str/int/bool raises "Expected GLib.Variant".
+    Profile and simple-connect dictionaries use uint32 numbers, while signal
+    thresholds use int32, so the integer type is selectable.
+    """
+    result = {}
+    for key, value in values.items():
+        if isinstance(value, GLib.Variant):
+            variant = value
+        elif isinstance(value, bool):
+            variant = GLib.Variant("b", value)
+        elif isinstance(value, int):
+            variant = GLib.Variant(int_type, value)
+        elif isinstance(value, float):
+            variant = GLib.Variant("d", value)
+        elif isinstance(value, str):
+            variant = GLib.Variant("s", value)
+        elif isinstance(value, (bytes, bytearray)):
+            variant = GLib.Variant("ay", value)
+        else:
+            raise TypeError(
+                f"cannot send {type(value).__name__} for {key!r}")
+        result[str(key)] = variant
+    return result
 
 
 def _plain(value):

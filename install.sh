@@ -78,6 +78,10 @@ run install -m644 "$DESKTOP_TMP" "$ROOT$DATADIR/applications/$APPID.desktop"
 rm -f "$DESKTOP_TMP"
 trap - EXIT
 
+run install -d "$ROOT$DATADIR/metainfo"
+run install -m644 "$DIR/data/$APPID.metainfo.xml" \
+    "$ROOT$DATADIR/metainfo/$APPID.metainfo.xml"
+
 run install -d "$ROOT$DATADIR/icons/hicolor/scalable/apps"
 run install -m644 "$DIR/data/$APPID.svg" \
     "$ROOT$DATADIR/icons/hicolor/scalable/apps/$APPID.svg"

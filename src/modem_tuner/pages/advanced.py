@@ -12,20 +12,21 @@ from gi.repository import Adw, Gtk  # noqa: E402
 from .. import constants as C  # noqa: E402
 from ..client import (MODEM_3GPP, MODEM_CELL_BROADCAST, MODEM_MESSAGING,
                       MODEM_SAR, Modem)  # noqa: E402
-from ..widgets import (RowList, banner, button_row, combo_row, monospace, panel, prompt, run_in_background, toast, value_row)  # noqa: E402
+from ..widgets import (RowList, banner, button_row, combo_row, monospace,  # noqa: E402
+                       panel, prompt, run_in_background, toast, value_row)
+from ._base import Page  # noqa: E402
 
 EPS_UE_MODE_LABELS = C.EPS_UE_MODE_LABELS
-STORAGE_LABELS = ["Unknown", "SIM", "Modem"]
 SAR_LEVELS = [str(level) for level in range(0, 11)]
 
 
-class AdvancedPage(Adw.PreferencesPage):
+class AdvancedPage(Page):
+    interfaces = (MODEM_3GPP, MODEM_SAR, MODEM_MESSAGING, MODEM_CELL_BROADCAST)
+
     def __init__(self, window) -> None:
-        super().__init__(title="Advanced", icon_name="applications-engineering-symbolic",
+        super().__init__(window, title="Advanced",
+                         icon_name="applications-engineering-symbolic",
                          name="advanced")
-        self.window = window
-        self.modem: Modem | None = None
-        self._updating = False
 
         self._eps_group = Adw.PreferencesGroup(
             title="EPS settings",
@@ -46,6 +47,8 @@ class AdvancedPage(Adw.PreferencesPage):
         self._eps_group.add(button_row(
             "Show initial bearer settings", "The APN the modem uses on attach.",
             "Show", self._show_initial_bearer))
+        self._bearer_view = monospace("—")
+        self._eps_group.add(panel(self._bearer_view))
 
         # -- NR5G ----------------------------------------------------------
         self._nr_group = Adw.PreferencesGroup(
@@ -87,17 +90,31 @@ class AdvancedPage(Adw.PreferencesPage):
         self.add(self._cb_group)
         self._cb_view = monospace("—")
         self._cb_group.add(panel(self._cb_view))
+        self._cb_entry = Adw.EntryRow(title="Channels")
+        self._cb_entry.set_show_apply_button(True)
+        self._cb_entry.set_tooltip_text("Ranges or IDs, e.g. 4370-4380 or 4370")
+        self._cb_entry.connect("apply", lambda _r: self._apply_channels())
+        self._cb_group.add(self._cb_entry)
         self._cb_group.add(button_row(
             "Clear channels", "Unsubscribe from every channel.", "Clear",
             self._on_clear_channels, destructive=True))
 
         # -- Messaging -----------------------------------------------------
-        self._msg_group = Adw.PreferencesGroup(title="Messaging storage")
+        self._msg_group = Adw.PreferencesGroup(
+            title="Messaging",
+            description="Messages stored on the SIM or modem.")
         self.add(self._msg_group)
         self._storage_row = value_row("Default storage", "—")
         self._msg_group.add(self._storage_row)
         self._supported_row = value_row("Supported storages", "—")
         self._msg_group.add(self._supported_row)
+        self._msg_group.add(button_row(
+            "List messages", "Read the messages stored on the modem.", "List",
+            self._list_messages))
+        self._msg_list = RowList()
+        self._msg_group.add(self._msg_list)
+        self._msg_group.add(button_row(
+            "Send message", "Create an SMS.", "Send…", self._on_send_message))
 
         # -- Firmware ------------------------------------------------------
         self._fw_group = Adw.PreferencesGroup(title="Firmware")
@@ -137,14 +154,6 @@ class AdvancedPage(Adw.PreferencesPage):
 
     # -- binding ----------------------------------------------------------
 
-    def bind(self, modem: Modem) -> None:
-        self.modem = modem
-        for interface in (MODEM_3GPP, MODEM_SAR, MODEM_MESSAGING, MODEM_CELL_BROADCAST):
-            if modem.has(interface):
-                modem.signal(interface, "g-properties-changed",
-                             lambda *_a: self.refresh())
-        self.refresh()
-
     def refresh(self) -> None:
         modem = self.modem
         if modem is None:
@@ -182,17 +191,19 @@ class AdvancedPage(Adw.PreferencesPage):
         channels = modem.cell_broadcast_channels
         if not channels:
             self._cb_view.set_text("No channels subscribed")
+            self._cb_entry.set_text("")
         else:
-            self._cb_view.set_text(", ".join(f"{a}-{b}" for a, b in channels))
+            text = ", ".join(f"{a}-{b}" if a != b else str(a) for a, b in channels)
+            self._cb_view.set_text(text)
+            self._cb_entry.set_text(text)
 
     def _refresh_messaging(self, modem: Modem) -> None:
         storage = modem.default_storage
         self._storage_row.value_label.set_text(
-            STORAGE_LABELS[storage] if storage < len(STORAGE_LABELS) else str(storage))
+            C.STORAGE_LABELS.get(storage, str(storage)))
         supported = modem.supported_storages
         self._supported_row.value_label.set_text(
-            ", ".join(STORAGE_LABELS[s] if s < len(STORAGE_LABELS) else str(s)
-                      for s in supported) or "—")
+            ", ".join(C.STORAGE_LABELS.get(s, str(s)) for s in supported) or "—")
 
     # -- actions ----------------------------------------------------------
 
@@ -237,11 +248,10 @@ class AdvancedPage(Adw.PreferencesPage):
             return
         settings = self.modem.initial_eps_bearer_settings
         if not settings:
-            self._simple_view.set_text("No initial bearer settings")
+            self._bearer_view.set_text("No initial bearer settings")
             return
-        self._simple_view.set_text("\n".join(
+        self._bearer_view.set_text("\n".join(
             f"{key}: {value}" for key, value in sorted(settings.items())))
-        toast(self.window, "Shown under Device → simple status")
 
     def _on_sar_enable(self, row, _param) -> None:
         if self._updating or self.modem is None:
@@ -266,6 +276,37 @@ class AdvancedPage(Adw.PreferencesPage):
                 toast(self.window, f"SAR level set to {index}")
 
         run_in_background(self.window, lambda: self.modem.sar_set_power_level(index), done)
+
+    def _apply_channels(self) -> None:
+        if self.modem is None:
+            return
+        channels = []
+        try:
+            for part in self._cb_entry.get_text().split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if "-" in part:
+                    start, end = part.split("-", 1)
+                    channels.append((int(start), int(end)))
+                else:
+                    value = int(part)
+                    channels.append((value, value))
+        except ValueError:
+            toast(self.window,
+                  "Use ranges like 4370-4380 or single channel IDs")
+            return
+
+        def done(_result, error) -> None:
+            if error is not None:
+                toast(self.window, f"Channels failed: {error}")
+            else:
+                toast(self.window, f"{len(channels)} channel ranges set")
+                self.refresh()
+
+        run_in_background(
+            self.window,
+            lambda: self.modem.set_cell_broadcast_channels(channels), done)
 
     def _on_clear_channels(self) -> None:
         if self.modem is None:
@@ -300,9 +341,96 @@ class AdvancedPage(Adw.PreferencesPage):
                     subtitle=str(image.get("version") or ""))
                 if image.get("current"):
                     row.add_suffix(Gtk.Label(label="current"))
+                else:
+                    unique_id = image.get("unique-id")
+                    if unique_id:
+                        use = Gtk.Button(label="Use", valign=Gtk.Align.CENTER)
+                        use.connect(
+                            "clicked",
+                            lambda _b, uid=unique_id: self._select_firmware(uid))
+                        row.add_suffix(use)
                 self._fw_list.add(row)
 
         run_in_background(self.window, self.modem.list_firmware, done)
+
+    def _select_firmware(self, unique_id: str) -> None:
+        if self.modem is None:
+            return
+
+        def done(_result, error) -> None:
+            if error is not None:
+                toast(self.window, f"Firmware select failed: {error}")
+            else:
+                toast(self.window, "Firmware image selected")
+                self._list_firmware()
+
+        run_in_background(
+            self.window, lambda: self.modem.select_firmware(unique_id), done)
+
+    def _list_messages(self) -> None:
+        self._msg_list.clear()
+        if self.modem is None:
+            return
+
+        def done(result, error) -> None:
+            if error is not None:
+                self._msg_list.add(banner(f"Cannot list messages: {error}"))
+                return
+            messages = result or []
+            if not messages:
+                self._msg_list.add(banner("No messages stored.", "info"))
+                return
+            for message in messages:
+                row = Adw.ActionRow(
+                    title=message.number or "(unknown number)",
+                    subtitle=message.text or "")
+                state = C.SMS_STATE_LABELS.get(message.state, str(message.state))
+                row.add_suffix(Gtk.Label(label=state))
+                self._msg_list.add(row)
+
+        run_in_background(self.window, self.modem.messages, done)
+
+    def _on_send_message(self) -> None:
+        if self.modem is None:
+            return
+        dialog = Adw.AlertDialog(
+            heading="Send message",
+            body="Create an SMS on the modem.")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        number = Gtk.Entry()
+        number.set_placeholder_text("Phone number")
+        text = Gtk.Entry()
+        text.set_placeholder_text("Message text")
+        box.append(number)
+        box.append(text)
+        dialog.set_extra_child(box)
+        dialog.add_cancel("Cancel")
+        dialog.add_response("ok", "Send")
+        dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("ok")
+        dialog.set_close_response("cancel")
+
+        def answered(_dialog, response: str) -> None:
+            if response != "ok":
+                return
+            target = number.get_text().strip()
+            body = text.get_text().strip()
+            if not target or not body:
+                toast(self.window, "Number and message text are required")
+                return
+
+            def done(_result, error) -> None:
+                if error is not None:
+                    toast(self.window, f"Send failed: {error}")
+                else:
+                    toast(self.window, "Message queued")
+                    self._list_messages()
+
+            run_in_background(
+                self.window, lambda: self.modem.create_message(target, body), done)
+
+        dialog.connect("response", answered)
+        dialog.present(self.get_root() or self.window)
 
     def _send_at(self) -> None:
         if self.modem is None:

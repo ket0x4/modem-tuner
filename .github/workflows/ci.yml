@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-gi \
+            gir1.2-glib-2.0 \
+            gir1.2-modemmanager-1.0 \
+            desktop-file-utils \
+            appstream \
+            python3-pip
+
+      - name: Lint
+        env:
+          PIP_BREAK_SYSTEM_PACKAGES: "1"
+        run: |
+          python3 -m pip install --user ruff
+          "$HOME/.local/bin/ruff" check .
+
+      - name: Compile
+        run: python3 -m compileall -q src tests
+
+      - name: Tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py' -v
+
+      - name: Validate desktop entry
+        run: |
+          sed 's|@BINDIR@|/usr/bin|g' data/*.desktop.in > /tmp/app.desktop
+          desktop-file-validate /tmp/app.desktop
+
+      - name: Validate AppStream metadata
+        run: appstreamcli validate --no-net data/*.metainfo.xml

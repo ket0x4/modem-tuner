@@ -94,6 +94,41 @@ class TestLabelsPresent(unittest.TestCase):
         self.assertEqual(C.NETWORK_STATES, {8, 11})
 
 
+class TestSharedLabels(unittest.TestCase):
+    def test_scan_status(self):
+        self.assertEqual(C.NETWORK_SCAN_STATUS_LABELS[1], "Registered")
+        self.assertEqual(C.NETWORK_SCAN_STATUS_LABELS[5], "Registered (roaming)")
+
+    def test_storage(self):
+        self.assertEqual(C.STORAGE_LABELS, {0: "Unknown", 1: "SIM", 2: "Modem"})
+
+    def test_ip_type(self):
+        self.assertEqual(C.IP_TYPE_VALUES, [3, 4, 6])
+        self.assertEqual(C.IP_TYPE_DIALOG_LABELS, ["IPv4", "IPv6", "IPv4v6"])
+        self.assertEqual(C.IP_TYPE_LABELS[0], "IPv4")
+
+    def test_apn_type_label(self):
+        # Default + IMS is the usual profile on the modem in this repo.
+        self.assertEqual(C.apn_type_label(2 | 4), "Default+IMS")
+        self.assertEqual(C.apn_type_label(0), "")
+
+
+class TestVariantDict(unittest.TestCase):
+    def test_plain_values_become_variants(self):
+        from modem_tuner.client import _sv_dict
+
+        mapping = _sv_dict({"apn": "internet", "count": 2, "on": True})
+        self.assertEqual(mapping["apn"].get_type_string(), "s")
+        self.assertEqual(mapping["count"].get_type_string(), "u")
+        self.assertEqual(mapping["on"].get_type_string(), "b")
+
+    def test_thresholds_use_unsigned_ints(self):
+        from modem_tuner.client import _sv_dict
+
+        mapping = _sv_dict({"rssi-threshold": 10})
+        self.assertEqual(mapping["rssi-threshold"].get_type_string(), "u")
+
+
 class TestShortError(unittest.TestCase):
     def test_strips_dbus_prefix(self):
         from modem_tuner.client import _short_error

@@ -10,18 +10,17 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from .. import constants as C  # noqa: E402
-from ..client import MODEM_3GPP, MODEM_IFACE, MODEM_SIGNAL, Modem  # noqa: E402
-from ..widgets import RowList, value_row  # noqa: E402
+from ..client import MODEM_3GPP, MODEM_IFACE, MODEM_SIGNAL, Bearer  # noqa: E402
+from ..widgets import RowList, banner, value_row  # noqa: E402
+from ._base import Page  # noqa: E402
 
 
-class StatusPage(Adw.PreferencesPage):
+class StatusPage(Page):
+    interfaces = (MODEM_IFACE, MODEM_3GPP, MODEM_SIGNAL)
+
     def __init__(self, window) -> None:
-        super().__init__(
-            title="Status", icon_name="network-modem-symbolic",
-            name="status",
-        )
-        self.window = window
-        self.modem: Modem | None = None
+        super().__init__(window, title="Status",
+                         icon_name="network-modem-symbolic", name="status")
 
         self._conn_group = Adw.PreferencesGroup(title="Connection")
         self.add(self._conn_group)
@@ -69,19 +68,9 @@ class StatusPage(Adw.PreferencesPage):
 
         self._bearer_list = RowList()
         self._bearer_group.add(self._bearer_list)
+        self._bearers: dict[str, Bearer] = {}
 
-        for interface in (MODEM_IFACE, MODEM_3GPP, MODEM_SIGNAL):
-            self._pending_interfaces = getattr(self, "_pending_interfaces", [])
-            self._pending_interfaces.append(interface)
-
-    def bind(self, modem: Modem) -> None:
-        self.modem = modem
-        for interface in self._pending_interfaces:
-            if modem.has(interface):
-                modem.signal(interface, "g-properties-changed", self._on_change)
-        self.refresh()
-
-    def _on_change(self, _proxy=None, _changed=None, _invalidated=None) -> None:
+    def changed(self, *_args) -> None:
         # Signals arrive for every property; coalescing keeps a burst of
         # signal-strength updates from redrawing the page each time.
         if getattr(self, "_scheduled", False):
@@ -145,31 +134,28 @@ class StatusPage(Adw.PreferencesPage):
         modem = self.modem
         if modem is None or not modem.has(MODEM_IFACE):
             return
-        for path in modem.list_bearers():
-            from ..client import BUS_NAME
+        try:
+            paths = modem.list_bearers()
+        except Exception as exc:  # noqa: BLE001
+            self._bearer_list.add(banner(f"Cannot read bearers: {exc}"))
+            return
 
-            import gi as _gi
-            _gi.require_version("Gio", "2.0")
-            from gi.repository import Gio
+        live = set(paths)
+        for path in list(self._bearers):
+            if path not in live:
+                del self._bearers[path]
+        for path in paths:
+            if path not in self._bearers:
+                self._bearers[path] = Bearer(path, on_change=self.changed)
 
-            proxy = Gio.DBusProxy.new_for_bus_sync(
-                Gio.BusType.SYSTEM, Gio.DBusProxyFlags.DO_NOT_AUTO_START, None,
-                BUS_NAME, path, "org.freedesktop.ModemManager1.Bearer", None,
-            )
-            interface = proxy.get_cached_property("Interface")
-            connected = proxy.get_cached_property("Connected")
-            apn = ""
-            try:
-                settings = proxy.get_cached_property("Properties")
-                if settings is not None:
-                    apn = dict(settings.unpack()).get("apn", "")
-            except Exception:  # noqa: BLE001
-                pass
+        for path in paths:
+            bearer = self._bearers[path]
             row = Adw.ActionRow(
                 title=path.rsplit("/", 1)[-1],
-                subtitle=f"APN {apn} · {interface.unpack() if interface else '—'}",
+                subtitle=f"APN {bearer.apn} · {bearer.interface or '—'}",
             )
-            status = Gtk.Label(label="connected" if connected and connected.unpack() else "disconnected")
+            status = Gtk.Label(
+                label="connected" if bearer.connected else "disconnected")
             status.add_css_class("dim-label")
             row.add_suffix(status)
             self._bearer_list.add(row)

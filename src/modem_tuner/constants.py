@@ -35,10 +35,7 @@ REGISTRATION_STATE = _enum_members(MM.Modem3gppRegistrationState)
 EPS_UE_MODE = _enum_members(MM.Modem3gppEpsUeModeOperation)
 PACKET_SERVICE_STATE = _enum_members(MM.Modem3gppPacketServiceState)
 LOCATION_SOURCE = _enum_members(MM.ModemLocationSource)
-LOCATION_ASSISTANCE = _enum_members(MM.ModemLocationAssistanceDataType)
-BEARER_ALLOWED_AUTH = _enum_members(MM.BearerAllowedAuth)
-BEARER_APN_TYPE = _enum_members(MM.BearerApnType)
-BEARER_PROFILE_SOURCE = _enum_members(MM.BearerProfileSource)
+SMS_STATE = _enum_members(MM.SmsState)
 
 # Readable labels. The enum nicks are fine for code, but 5GNR / LTE_CAT_M are
 # not what a user wants to see.
@@ -86,6 +83,30 @@ AUTH_LABELS = {
 PROFILE_SOURCE_LABELS = {
     0: "Unknown", 1: "Admin", 2: "User", 3: "Operator", 4: "Modem",
     5: "Device",
+}
+STORAGE_LABELS = {0: "Unknown", 1: "SIM", 2: "Modem"}
+ESIM_STATUS_LABELS = {
+    0: "Unknown", 1: "No profile", 2: "With profiles", 3: "Provisioning",
+}
+REMOVABILITY_LABELS = {0: "Unknown", 1: "Removable", 2: "Not removable"}
+IP_TYPE_LABELS = {
+    0: "IPv4", 1: "IPv6", 2: "IPv4v6", 3: "IPv4", 4: "IPv6",
+    5: "IPv4v6", 6: "IPv4v6",
+}
+IP_TYPE_VALUES = [3, 4, 6]
+IP_TYPE_DIALOG_LABELS = [IP_TYPE_LABELS[value] for value in IP_TYPE_VALUES]
+# Registration state as reported in scan results; the wording is the one the
+# scan list has always used, which reads better there than REGISTRATION_LABELS.
+NETWORK_SCAN_STATUS_LABELS = {
+    0: "Not registered", 1: "Registered", 2: "Searching",
+    3: "Registration denied", 4: "Unknown", 5: "Registered (roaming)",
+}
+SMS_STATE_LABELS = {
+    0: "Unknown", 1: "Stored", 2: "Receiving", 3: "Received",
+    4: "Sending", 5: "Sent", 6: "Error",
+}
+USSD_STATE_LABELS = {
+    0: "Idle", 1: "Active", 2: "User response required",
 }
 
 # Access technology bits, ordered strongest first. Values are looked up by enum
@@ -173,6 +194,11 @@ def supported_mode_pairs(pairs) -> list[tuple[int, int]]:
 def mode_bits_label(bits: int) -> str:
     parts = [label for bit, label in MODE_LABELS.items() if bits & bit]
     return "+".join(parts) if parts else "none"
+
+
+def apn_type_label(mask: int) -> str:
+    names = [label for value, label in sorted(APN_TYPE_LABELS.items()) if mask & value]
+    return "+".join(names)
 
 
 def capability_label(capability: int) -> str:

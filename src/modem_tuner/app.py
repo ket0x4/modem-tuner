@@ -11,10 +11,11 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gio, Gtk  # noqa: E402
 
+from . import __version__  # noqa: E402
 from .window import ModemTunerWindow  # noqa: E402
 
 APP_ID = "io.github.modemtuner.ModemTuner"
-VERSION = "1.0.0"
+VERSION = __version__
 
 
 class ModemTunerApp(Adw.Application):
@@ -67,5 +68,9 @@ class ModemTunerApp(Adw.Application):
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv if argv is None else argv)
+    if any(arg in ("--version", "-V") for arg in args[1:]):
+        print(VERSION)
+        return 0
     app = ModemTunerApp()
-    return app.run(argv if argv is not None else sys.argv)
+    return app.run(args)

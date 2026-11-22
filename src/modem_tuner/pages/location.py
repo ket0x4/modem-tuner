@@ -9,9 +9,10 @@ gi.require_version("Adw", "1")
 
 from gi.repository import Adw, Gtk  # noqa: E402
 
-from ..client import MODEM_LOCATION, Modem  # noqa: E402
-from ..widgets import (button_row, monospace, panel, run_in_background,
-                       spin_row, toast, value_row)  # noqa: E402
+from ..client import MODEM_LOCATION  # noqa: E402
+from ..widgets import (button_row, monospace, panel, run_in_background,  # noqa: E402
+                       spin_row, toast, value_row)
+from ._base import Page  # noqa: E402
 
 SOURCE_LABELS = [
     (1, "3GPP cell info", "network-cellular-symbolic"),
@@ -33,12 +34,12 @@ CAPABILITY_LABELS = [
 ]
 
 
-class LocationPage(Adw.PreferencesPage):
+class LocationPage(Page):
+    interfaces = (MODEM_LOCATION,)
+
     def __init__(self, window) -> None:
-        super().__init__(title="Location", icon_name="find-location-symbolic",
-                         name="location")
-        self.window = window
-        self.modem: Modem | None = None
+        super().__init__(window, title="Location",
+                         icon_name="find-location-symbolic", name="location")
         self._checks: dict[int, Gtk.CheckButton] = {}
 
         self._caps_group = Adw.PreferencesGroup(title="Capabilities")
@@ -104,29 +105,27 @@ class LocationPage(Adw.PreferencesPage):
         self._servers = monospace("—")
         self._servers_group.add(panel(self._servers))
 
-    def bind(self, modem: Modem) -> None:
-        self.modem = modem
-        if modem.has(MODEM_LOCATION):
-            modem.signal(MODEM_LOCATION, "g-properties-changed",
-                         lambda *_a: self.refresh())
-        self.refresh()
-
     def refresh(self) -> None:
         modem = self.modem
         if modem is None or not modem.has(MODEM_LOCATION):
             return
-        capabilities = modem.location_capabilities
-        self._caps_row.value_label.set_text(
-            ", ".join(label for value, label in CAPABILITY_LABELS if capabilities & value)
-            or "none")
-        enabled = modem.location_enabled
-        for value, check in self._checks.items():
-            check.set_active(bool(enabled & value))
-        self._signals_row.set_active(modem.location_signals)
-        self._supl_row.set_text(modem.supl_server)
-        self._refresh_row.set_value(modem.gps_refresh_rate)
-        servers = modem.assistance_data_servers
-        self._servers.set_text("\n".join(servers) if servers else "None configured")
+        self._updating = True
+        try:
+            capabilities = modem.location_capabilities
+            self._caps_row.value_label.set_text(
+                ", ".join(label for value, label in CAPABILITY_LABELS
+                          if capabilities & value) or "none")
+            enabled = modem.location_enabled
+            for value, check in self._checks.items():
+                check.set_active(bool(enabled & value))
+            self._signals_row.set_active(modem.location_signals)
+            self._supl_row.set_text(modem.supl_server)
+            self._refresh_row.set_value(modem.gps_refresh_rate)
+            servers = modem.assistance_data_servers
+            self._servers.set_text(
+                "\n".join(servers) if servers else "None configured")
+        finally:
+            self._updating = False
 
     def _apply_sources(self) -> None:
         if self.modem is None:
@@ -175,7 +174,7 @@ class LocationPage(Adw.PreferencesPage):
         run_in_background(self.window, lambda: self.modem.set_supl_server(server), done)
 
     def _apply_refresh(self, value: float) -> None:
-        if self.modem is None:
+        if self._updating or self.modem is None:
             return
         rate = int(value)
 

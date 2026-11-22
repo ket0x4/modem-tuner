@@ -57,8 +57,14 @@ Requires GTK 4, libadwaita 1, PyGObject and the ModemManager typelib
 (`libmm-glib`).
 
 ```sh
-python3 -m modem_tuner          # from the source tree, with PYTHONPATH=src
+PYTHONPATH=src python3 -m modem_tuner          # from the source tree
+PYTHONPATH=src python3 -m modem_tuner --version
 ```
+
+The window follows the modem as ModemManager adds or removes it, and offers a
+Retry button when no modem is present. Long D-Bus operations show a spinner in
+the header with a cancel button; the modem call itself cannot be aborted, so the
+next property change refreshes the page either way.
 
 or install it:
 
@@ -77,17 +83,33 @@ message instead of an import error at first launch.
 ```
 src/modem_tuner/
   app.py            application, actions, about dialog
-  window.py         window, section menu, modem selection
-  client.py         ModemManager D-Bus client (Modem, Sim)
+  window.py         window, section menu, modem selection, hotplug watch
+  client.py         ModemManager D-Bus client (Modem, Sim, Bearer, Message)
   constants.py      enum values and human labels
-  widgets.py        shared rows, background worker, list helpers
+  widgets.py        shared rows, background tasks, list helpers
+  pages/_base.py    shared bind/refresh plumbing for the pages
   pages/            one module per section
 data/
   modem-tuner           launcher, resolves its own prefix
   *.desktop.in          desktop entry with @BINDIR@ substitution
+  *.metainfo.xml        AppStream metadata
   *.svg                 application icon
 install.sh          installs into PREFIX, supports DESTDIR and sudo
+meson.build         alternative install path
+pyproject.toml      packaging metadata and lint config
 ```
+
+## Development
+
+```sh
+PYTHONPATH=src python3 -m unittest discover -s tests -v
+python3 -m compileall -q src tests
+```
+
+`tests/test_live_modem.py` exercises the real modem and skips when none is
+present. It also compares every client variant type against the introspected
+D-Bus signatures, which catches struct/signature drift. CI runs the same checks
+and validates the desktop entry and AppStream metadata.
 
 ## Notes on behaviour
 
@@ -101,6 +123,13 @@ install.sh          installs into PREFIX, supports DESTDIR and sudo
   a worker thread so the window stays responsive; scan can take a minute.
 - Band selection writes the explicit list rather than `ANY`, because some
   Qualcomm modems silently ignore `ANY` after a band restriction was applied.
+  The picker has a filter box and current/all/none presets.
+- **Network selection** drops the active data bearer first: ModemManager
+  refuses `Register` while a bearer is connected. The app asks before
+  disconnecting, then registers automatic or the chosen operator.
+- **Messaging** lists stored SMS and can create one; **cell broadcast** accepts
+  ranges such as `4370-4380`. Firmware images can be selected when the modem
+  reports a unique ID.
 
 ## Licence
 
